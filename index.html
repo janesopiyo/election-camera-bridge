@@ -83,7 +83,7 @@
         for (const candidate of pendingIce.splice(0)) await peer.addIceCandidate(candidate).catch(console.warn);
         const answer = await peer.createAnswer();
         await peer.setLocalDescription(answer);
-        sendToApp({ type: 'MOVING_CAMERA_ANSWER', description: peer.localDescription });
+        sendToApp({ type: 'MOVING_CAMERA_ANSWER', description: { type: peer.localDescription.type, sdp: peer.localDescription.sdp } });
         setStatus('Camera active. Connecting to the election display…');
       } catch (err) {
         console.error('Camera bridge error:', err);
