@@ -41,7 +41,14 @@
 
   function setStatus(text) { status.textContent = text; }
   function sendToApp(message) {
-    if (window.opener && appOrigin) window.opener.postMessage(message, appOrigin);
+    if (!window.opener || !appOrigin) return;
+    // Only send structured-clone-safe plain data across windows.
+    const safeMessage = JSON.parse(JSON.stringify(message, (key, value) => {
+      if (value instanceof RTCSessionDescription) return { type: value.type, sdp: value.sdp };
+      if (value && typeof value.toJSON === 'function') return value.toJSON();
+      return value;
+    }));
+    window.opener.postMessage(safeMessage, appOrigin);
   }
   function stopCamera(notify) {
     stopped = true;
@@ -105,7 +112,10 @@
   });
   window.addEventListener('beforeunload', () => stopCamera(false));
   if (!window.opener) setStatus('Open this page from the Start Video Call button in the election system.');
-  else window.opener.postMessage({ type: 'MOVING_CAMERA_BRIDGE_READY' }, '*');
+  else {
+    // Initial ready signal contains only clone-safe primitive values.
+    window.opener.postMessage({ type: 'MOVING_CAMERA_BRIDGE_READY', bridgeVersion: '2026-10-09-safe-signalling' }, '*');
+  }
 })();
 </script>
 </body>
