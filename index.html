@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Election Camera Bridge</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 18px; background: #0b1220; color: #f8fafc; }
+    main { max-width: 720px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; font-size: 1.25rem; }
+    p { color: #cbd5e1; line-height: 1.45; }
+    video { display: block; width: 100%; aspect-ratio: 4/3; background: #000; object-fit: cover; border-radius: 12px; }
+    .status { margin-top: 12px; padding: 10px 12px; background: #172033; border-radius: 8px; color: #dbeafe; }
+    button { border: 0; border-radius: 8px; padding: 10px 16px; margin-top: 12px; font-weight: 700; background: #dc2626; color: white; cursor: pointer; }
+    small { display: block; margin-top: 12px; color: #94a3b8; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Election System — Camera Connection</h1>
+  <p>This separate secure page opens the camera and microphone because Google Apps Script's embedded page may block direct device access. Keep this window open during the video display.</p>
+  <video id="localVideo" autoplay playsinline muted></video>
+  <div id="status" class="status" role="status">Waiting for the election system to connect…</div>
+  <button id="stopButton" type="button">Stop camera</button>
+  <small>Your camera and microphone are sent to the election page using a browser-to-browser WebRTC connection. This page does not upload or record media on a server.</small>
+</main>
+<script>
+(() => {
+  'use strict';
+  const video = document.getElementById('localVideo');
+  const status = document.getElementById('status');
+  const stopButton = document.getElementById('stopButton');
+  let peer = null;
+  let localStream = null;
+  let appOrigin = null;
+  let pendingIce = [];
+  let stopped = false;
+
+  function setStatus(text) { status.textContent = text; }
+  function sendToApp(message) {
+    if (window.opener && appOrigin) window.opener.postMessage(message, appOrigin);
+  }
+  function stopCamera(notify) {
+    stopped = true;
+    if (peer) { try { peer.close(); } catch (e) {} peer = null; }
+    if (localStream) {
+      localStream.getTracks().forEach(track => { try { track.stop(); } catch (e) {} });
+      localStream = null;
+    }
+    video.srcObject = null;
+    setStatus('Camera and microphone stopped. You can close this window.');
+    if (notify) sendToApp({ type: 'MOVING_CAMERA_ERROR', name: 'AbortError', message: 'Camera stopped by the user.' });
+  }
+
+  window.addEventListener('message', async event => {
+    if (!window.opener || event.source !== window.opener) return;
+    const msg = event.data || {};
+    if (msg.type === 'MOVING_CAMERA_OFFER' && msg.description) {
+      if (peer) return;
+      appOrigin = event.origin;
+      try {
+        setStatus('Requesting camera and microphone permission…');
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+        if (stopped) { localStream.getTracks().forEach(t => t.stop()); return; }
+        video.srcObject = localStream;
+        await video.play().catch(() => {});
+        peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        localStream.getTracks().forEach(track => peer.addTrack(track, localStream));
+        peer.onicecandidate = e => {
+          if (e.candidate) sendToApp({ type: 'MOVING_CAMERA_ICE', candidate: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate });
+        };
+        peer.onconnectionstatechange = () => {
+          if (peer && peer.connectionState === 'connected') setStatus('Camera and microphone are connected to the election display. Keep this window open.');
+          if (peer && peer.connectionState === 'failed') setStatus('Connection failed. Stop the camera and retry from the election system.');
+        };
+        await peer.setRemoteDescription(msg.description);
+        for (const candidate of pendingIce.splice(0)) await peer.addIceCandidate(candidate).catch(console.warn);
+        const answer = await peer.createAnswer();
+        await peer.setLocalDescription(answer);
+        sendToApp({ type: 'MOVING_CAMERA_ANSWER', description: peer.localDescription });
+        setStatus('Camera active. Connecting to the election display…');
+      } catch (err) {
+        console.error('Camera bridge error:', err);
+        setStatus('Could not open camera/microphone: ' + (err.name || 'Error') + '. Check permissions for this window.');
+        sendToApp({ type: 'MOVING_CAMERA_ERROR', name: err.name || 'Error', message: err.message || String(err) });
+        stopCamera(false);
+      }
+    } else if (msg.type === 'MOVING_CAMERA_ICE' && msg.candidate) {
+      if (peer && peer.remoteDescription) peer.addIceCandidate(msg.candidate).catch(console.warn);
+      else pendingIce.push(msg.candidate);
+    } else if (msg.type === 'MOVING_CAMERA_STOP') {
+      stopCamera(false);
+    }
+  });
+
+  stopButton.addEventListener('click', () => {
+    stopCamera(true);
+    try { if (window.opener) window.opener.focus(); } catch (e) {}
+  });
+  window.addEventListener('beforeunload', () => stopCamera(false));
+  if (!window.opener) setStatus('Open this page from the Start Video Call button in the election system.');
+  else window.opener.postMessage({ type: 'MOVING_CAMERA_BRIDGE_READY' }, '*');
+})();
+</script>
+</body>
+</html>
